@@ -146,7 +146,7 @@ def save_references(references, output_file="references.txt"):
 # Main execution
 if __name__ == "__main__":
     # Your PDF path
-    pdf_path = "2025_acl-long_422.pdf"
+    pdf_path = "2025.acl-long.422.pdf"
 
     # Extract references (adjust page numbers to where references start/end)
     references = extract_references_from_pdf(
