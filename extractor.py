@@ -1,8 +1,7 @@
 import torch
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from PIL import Image
-import pdf2image
-from pathlib import Path
+import pypdfium2 as pdfium
 
 # Load the model
 model = Qwen3VLForConditionalGeneration.from_pretrained(
@@ -14,10 +13,27 @@ model = Qwen3VLForConditionalGeneration.from_pretrained(
 processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-32B-Instruct")
 
 
-# Convert PDF to images
-def pdf_to_images(pdf_path, dpi=200):
-    """Convert PDF pages to PIL Images"""
-    images = pdf2image.convert_from_path(pdf_path, dpi=dpi)
+# Convert PDF to images using pypdfium2
+def pdf_to_images(pdf_path, scale=2.0):
+    """
+    Convert PDF pages to PIL Images using pypdfium2
+
+    Args:
+        pdf_path: Path to PDF file
+        scale: Rendering scale (2.0 = 144 DPI, 3.0 = 216 DPI)
+    """
+    pdf = pdfium.PdfDocument(pdf_path)
+    images = []
+
+    for page_number in range(len(pdf)):
+        page = pdf[page_number]
+        pil_image = page.render(
+            scale=scale,  # Higher scale = better quality
+        ).to_pil()
+        images.append(pil_image)
+        page.close()
+
+    pdf.close()
     return images
 
 
@@ -37,7 +53,6 @@ Important:
 - Extract the complete, exact title
 - If a reference spans multiple lines, combine them
 - Only extract actual references, not in-text citations
-- Some pages might not contain references, ignore them
 - Maintain the original numbering if present
 
 Extract all references visible on this page:"""
@@ -93,9 +108,9 @@ def extract_references_from_pdf(pdf_path, start_page=None, end_page=None):
         # Generate
         generated_ids = model.generate(
             **inputs,
-            max_new_tokens=4096,  # Increased for long reference lists
-            temperature=0.1,  # Low temperature for factual extraction
-            do_sample=False  # Deterministic output
+            max_new_tokens=4096,
+            temperature=0.1,
+            do_sample=False
         )
 
         generated_ids_trimmed = [
@@ -133,7 +148,6 @@ if __name__ == "__main__":
     pdf_path = "2025_acl-long_422.pdf"
 
     # Extract references (adjust page numbers to where references start/end)
-    # For your paper, references seem to be on pages 9-14
     references = extract_references_from_pdf(
         pdf_path,
         start_page=9,  # Start from references section
