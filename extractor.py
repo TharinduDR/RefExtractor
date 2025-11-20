@@ -150,9 +150,7 @@ if __name__ == "__main__":
 
     # Extract references (adjust page numbers to where references start/end)
     references = extract_references_from_pdf(
-        pdf_path,
-        start_page=9,  # Start from references section
-        end_page=14  # End at last reference page
+        pdf_path
     )
 
     # Print results
