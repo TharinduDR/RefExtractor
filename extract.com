@@ -5,10 +5,12 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
 
+pip install flash_attn --no-build-isolation
+
 export HF_HOME=/mnt/nfs/homes/ranasint/hf_home
 huggingface-cli login --token
 
-python -m extract
+python -m extractor
 
 
 
