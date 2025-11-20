@@ -8,7 +8,6 @@ from pathlib import Path
 model = Qwen3VLForConditionalGeneration.from_pretrained(
     "Qwen/Qwen3-VL-32B-Instruct",
     torch_dtype=torch.bfloat16,
-    attn_implementation="flash_attention_2",  # Better performance
     device_map="auto"
 )
 
