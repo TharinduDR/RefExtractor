@@ -38,6 +38,7 @@ Important:
 - Extract the complete, exact title
 - If a reference spans multiple lines, combine them
 - Only extract actual references, not in-text citations
+- Some pages might not contain references, ignore them
 - Maintain the original numbering if present
 
 Extract all references visible on this page:"""
