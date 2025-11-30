@@ -591,7 +591,7 @@ def print_summary(results: Dict):
 
 # Main execution
 if __name__ == "__main__":
-    pdf_path = "2025_acl-long.422.pdf"
+    pdf_path = "2025.acl-long.422.pdf"
 
     # Step 1: Extract references from PDF
     print("STEP 1: Extracting references from PDF...")
