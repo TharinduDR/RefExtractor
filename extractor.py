@@ -316,7 +316,7 @@ def verify_reference_in_dblp(reference: Dict, min_match_threshold: float = 80.0)
                                            title.lower(),
                                            dblp_result['title'].lower()).ratio()
 
-        if title_similarity < 0.9:  # Title must be reasonably similar
+        if title_similarity < 0.7:  # Title must be reasonably similar
             continue
 
         # Compare authors
@@ -466,7 +466,7 @@ def print_summary(results: Dict):
 
 # Main execution
 if __name__ == "__main__":
-    pdf_path = "2025.acl-long_422.pdf"
+    pdf_path = "2025.acl-long.422.pdf"
 
     # Step 1: Extract references from PDF
     print("STEP 1: Extracting references from PDF...")
