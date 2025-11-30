@@ -8,6 +8,7 @@ from difflib import SequenceMatcher
 from typing import List, Dict, Tuple
 import time
 import json
+from scholarly import scholarly, ProxyGenerator
 
 # Load the model
 model = Qwen3VLForConditionalGeneration.from_pretrained(
@@ -117,22 +118,15 @@ def extract_references_from_pdf(pdf_path, start_page=None, end_page=None):
 
 # Parse extracted references
 def parse_references(reference_text: str) -> List[Dict]:
-    """
-    Parse reference text into structured format
-    Returns list of dicts with 'authors' and 'title'
-    """
+    """Parse reference text into structured format"""
     references = []
 
-    # Match patterns like: 1. **Author1, Author2** - "Title"
     pattern = r'\d+\.\s*\*\*(.*?)\*\*\s*-\s*["\"](.+?)["\"]'
     matches = re.findall(pattern, reference_text, re.DOTALL)
 
     for authors_str, title in matches:
-        # Clean up authors
         authors = [a.strip() for a in authors_str.split(',')]
-        authors = [a for a in authors if a]  # Remove empty
-
-        # Clean up title
+        authors = [a for a in authors if a]
         title = title.strip()
 
         references.append({
@@ -146,10 +140,7 @@ def parse_references(reference_text: str) -> List[Dict]:
 
 # DBLP API functions
 def search_dblp(title: str, max_results: int = 5) -> List[Dict]:
-    """
-    Search DBLP for a paper by title
-    Returns list of matching papers with authors
-    """
+    """Search DBLP for a paper by title"""
     url = "https://dblp.org/search/publ/api"
     params = {
         'q': title,
@@ -173,7 +164,6 @@ def search_dblp(title: str, max_results: int = 5) -> List[Dict]:
         for hit in hits['hit']:
             info = hit.get('info', {})
 
-            # Extract authors
             authors_data = info.get('authors', {}).get('author', [])
             if isinstance(authors_data, dict):
                 authors_data = [authors_data]
@@ -195,42 +185,85 @@ def search_dblp(title: str, max_results: int = 5) -> List[Dict]:
         return []
 
 
+# Google Scholar functions
+def setup_scholarly_proxy():
+    """Setup proxy for scholarly (call once at start)"""
+    try:
+        pg = ProxyGenerator()
+        pg.FreeProxies()
+        scholarly.use_proxy(pg)
+        print("✅ Google Scholar proxy configured")
+        return True
+    except Exception as e:
+        print(f"⚠️  Could not setup proxy: {e}")
+        print("   Continuing without proxy (may be rate-limited)")
+        return False
+
+
+def search_google_scholar(title: str, max_results: int = 3) -> List[Dict]:
+    """
+    Search Google Scholar for a paper by title
+    Returns list of matching papers with authors
+    """
+    try:
+        print(f"  📚 Searching Google Scholar...")
+        search_query = scholarly.search_pubs(title)
+
+        results = []
+        for i, paper in enumerate(search_query):
+            if i >= max_results:
+                break
+
+            try:
+                # Extract author names
+                authors = []
+                if 'bib' in paper and 'author' in paper['bib']:
+                    author_field = paper['bib']['author']
+                    # Can be string or list
+                    if isinstance(author_field, str):
+                        authors = [a.strip() for a in author_field.split(' and ')]
+                    elif isinstance(author_field, list):
+                        authors = author_field
+
+                results.append({
+                    'title': paper['bib'].get('title', ''),
+                    'authors': authors,
+                    'year': paper['bib'].get('pub_year', ''),
+                    'venue': paper['bib'].get('venue', ''),
+                    'url': paper.get('pub_url', ''),
+                    'cited_by': paper.get('num_citations', 0)
+                })
+            except Exception as e:
+                print(f"    Warning: Error parsing Scholar result: {e}")
+                continue
+
+        return results
+
+    except Exception as e:
+        print(f"  ❌ Error searching Google Scholar: {e}")
+        return []
+
+
 def normalize_name(name: str) -> str:
-    """
-    Normalize author name for comparison
-    - Remove special characters
-    - Lowercase
-    - Handle initials
-    """
-    # Remove extra whitespace and special chars
+    """Normalize author name for comparison"""
     name = re.sub(r'[^\w\s\.]', '', name)
     name = ' '.join(name.split())
     return name.lower()
 
 
 def names_match(name1: str, name2: str, threshold: float = 0.85) -> bool:
-    """
-    Check if two author names match
-    Handles variations like:
-    - "John Smith" vs "J. Smith"
-    - "John A. Smith" vs "John Smith"
-    - Minor spelling differences
-    """
+    """Check if two author names match"""
     n1 = normalize_name(name1)
     n2 = normalize_name(name2)
 
-    # Exact match
     if n1 == n2:
         return True
 
-    # Check if one is initials of the other
-    # e.g., "j smith" matches "john smith"
     parts1 = n1.split()
     parts2 = n2.split()
 
     # Check last name match
     if parts1[-1] != parts2[-1]:
-        # Allow fuzzy match on last name
         similarity = SequenceMatcher(None, parts1[-1], parts2[-1]).ratio()
         if similarity < threshold:
             return False
@@ -240,26 +273,20 @@ def names_match(name1: str, name2: str, threshold: float = 0.85) -> bool:
         first1 = parts1[0]
         first2 = parts2[0]
 
-        # Initial match (e.g., "j" matches "john")
         if first1[0] == first2[0]:
             return True
 
-        # Fuzzy match on first name
         similarity = SequenceMatcher(None, first1, first2).ratio()
         if similarity >= threshold:
             return True
 
-    # Overall fuzzy match
     overall_similarity = SequenceMatcher(None, n1, n2).ratio()
     return overall_similarity >= threshold
 
 
-def compare_author_lists(extracted_authors: List[str], dblp_authors: List[str]) -> Tuple[bool, float, List[str]]:
-    """
-    Compare two lists of authors
-    Returns: (all_match, match_percentage, unmatched_authors)
-    """
-    if not extracted_authors or not dblp_authors:
+def compare_author_lists(extracted_authors: List[str], found_authors: List[str]) -> Tuple[bool, float, List[str]]:
+    """Compare two lists of authors"""
+    if not extracted_authors or not found_authors:
         return False, 0.0, extracted_authors
 
     unmatched = []
@@ -267,8 +294,8 @@ def compare_author_lists(extracted_authors: List[str], dblp_authors: List[str]) 
 
     for ext_author in extracted_authors:
         found_match = False
-        for dblp_author in dblp_authors:
-            if names_match(ext_author, dblp_author):
+        for found_author in found_authors:
+            if names_match(ext_author, found_author):
                 found_match = True
                 matched_count += 1
                 break
@@ -283,43 +310,37 @@ def compare_author_lists(extracted_authors: List[str], dblp_authors: List[str]) 
 
 
 def verify_reference_in_dblp(reference: Dict, min_match_threshold: float = 80.0) -> Dict:
-    """
-    Verify a single reference against DBLP
-    Returns verification result with match status
-    """
+    """Verify a single reference against DBLP"""
     title = reference['title']
     authors = reference['authors']
 
-    print(f"\nSearching DBLP for: {title[:60]}...")
+    print(f"\n  🔍 DBLP: {title[:60]}...")
 
-    # Search DBLP
     dblp_results = search_dblp(title)
 
     if not dblp_results:
-        print("  ❌ Not found in DBLP")
+        print("    ❌ Not found in DBLP")
         return {
             'reference': reference,
             'status': 'not_found',
+            'source': 'dblp',
             'dblp_match': None,
             'author_match': False,
             'match_percentage': 0.0,
             'unmatched_authors': authors
         }
 
-    # Check best match
     best_match = None
     best_percentage = 0.0
 
     for dblp_result in dblp_results:
-        # Check title similarity first
         title_similarity = SequenceMatcher(None,
                                            title.lower(),
                                            dblp_result['title'].lower()).ratio()
 
-        if title_similarity < 0.7:  # Title must be reasonably similar
+        if title_similarity < 0.7:
             continue
 
-        # Compare authors
         all_match, match_percentage, unmatched = compare_author_lists(
             authors,
             dblp_result['authors']
@@ -335,32 +356,32 @@ def verify_reference_in_dblp(reference: Dict, min_match_threshold: float = 80.0)
             }
 
     if not best_match:
-        print("  ❌ Found in DBLP but title doesn't match well")
+        print("    ❌ Found but title doesn't match")
         return {
             'reference': reference,
             'status': 'title_mismatch',
+            'source': 'dblp',
             'dblp_match': dblp_results[0] if dblp_results else None,
             'author_match': False,
             'match_percentage': 0.0,
             'unmatched_authors': authors
         }
 
-    # Determine status based on match percentage
     if best_match['match_percentage'] >= min_match_threshold:
         if best_match['all_match']:
-            print(f"  ✅ Perfect match! All authors verified")
+            print(f"    ✅ Perfect match!")
             status = 'verified'
         else:
-            print(f"  ⚠️  Partial match ({best_match['match_percentage']:.1f}%)")
-            print(f"     Unmatched: {', '.join(best_match['unmatched_authors'][:3])}")
+            print(f"    ⚠️  Partial ({best_match['match_percentage']:.1f}%)")
             status = 'partial_match'
     else:
-        print(f"  ❌ Authors differ ({best_match['match_percentage']:.1f}% match)")
+        print(f"    ❌ Authors differ ({best_match['match_percentage']:.1f}%)")
         status = 'author_mismatch'
 
     return {
         'reference': reference,
         'status': status,
+        'source': 'dblp',
         'dblp_match': best_match['dblp_result'],
         'author_match': best_match['all_match'],
         'match_percentage': best_match['match_percentage'],
@@ -368,30 +389,123 @@ def verify_reference_in_dblp(reference: Dict, min_match_threshold: float = 80.0)
     }
 
 
-def verify_all_references(references: List[Dict], delay: float = 0.5) -> Dict:
+def verify_reference_in_scholar(reference: Dict, min_match_threshold: float = 80.0) -> Dict:
+    """Verify a single reference against Google Scholar"""
+    title = reference['title']
+    authors = reference['authors']
+
+    scholar_results = search_google_scholar(title, max_results=3)
+
+    if not scholar_results:
+        print("    ❌ Not found in Google Scholar")
+        return {
+            'reference': reference,
+            'status': 'not_found',
+            'source': 'google_scholar',
+            'scholar_match': None,
+            'author_match': False,
+            'match_percentage': 0.0,
+            'unmatched_authors': authors
+        }
+
+    best_match = None
+    best_percentage = 0.0
+
+    for scholar_result in scholar_results:
+        title_similarity = SequenceMatcher(None,
+                                           title.lower(),
+                                           scholar_result['title'].lower()).ratio()
+
+        if title_similarity < 0.7:
+            continue
+
+        all_match, match_percentage, unmatched = compare_author_lists(
+            authors,
+            scholar_result['authors']
+        )
+
+        if match_percentage > best_percentage:
+            best_percentage = match_percentage
+            best_match = {
+                'scholar_result': scholar_result,
+                'all_match': all_match,
+                'match_percentage': match_percentage,
+                'unmatched_authors': unmatched
+            }
+
+    if not best_match:
+        print("    ❌ Found but title doesn't match")
+        return {
+            'reference': reference,
+            'status': 'title_mismatch',
+            'source': 'google_scholar',
+            'scholar_match': scholar_results[0] if scholar_results else None,
+            'author_match': False,
+            'match_percentage': 0.0,
+            'unmatched_authors': authors
+        }
+
+    if best_match['match_percentage'] >= min_match_threshold:
+        if best_match['all_match']:
+            print(f"    ✅ Verified via Google Scholar!")
+            status = 'verified'
+        else:
+            print(f"    ⚠️  Partial match ({best_match['match_percentage']:.1f}%)")
+            status = 'partial_match'
+    else:
+        print(f"    ❌ Authors differ ({best_match['match_percentage']:.1f}%)")
+        status = 'author_mismatch'
+
+    return {
+        'reference': reference,
+        'status': status,
+        'source': 'google_scholar',
+        'scholar_match': best_match['scholar_result'],
+        'author_match': best_match['all_match'],
+        'match_percentage': best_match['match_percentage'],
+        'unmatched_authors': best_match['unmatched_authors']
+    }
+
+
+def verify_all_references(references: List[Dict],
+                          dblp_delay: float = 0.5,
+                          scholar_delay: float = 5.0) -> Dict:
     """
-    Verify all references against DBLP
-    Returns dict with 'verified' and 'unverified' lists
+    Verify all references against DBLP, then Google Scholar for failures
     """
     verified = []
     unverified = []
 
     print(f"\n{'=' * 80}")
-    print(f"VERIFYING {len(references)} REFERENCES AGAINST DBLP")
+    print(f"VERIFYING {len(references)} REFERENCES")
     print(f"{'=' * 80}")
 
+    # Setup Google Scholar proxy
+    setup_scholarly_proxy()
+
     for idx, ref in enumerate(references, 1):
-        print(f"\n[{idx}/{len(references)}]", end=" ")
+        print(f"\n[{idx}/{len(references)}] {ref['title'][:50]}...")
 
+        # Try DBLP first
         result = verify_reference_in_dblp(ref)
+        time.sleep(dblp_delay)
 
-        if result['status'] == 'verified':
+        # If DBLP verification failed, try Google Scholar
+        if result['status'] in ['not_found', 'title_mismatch', 'author_mismatch']:
+            print(f"  📚 Trying Google Scholar as fallback...")
+            scholar_result = verify_reference_in_scholar(ref)
+            time.sleep(scholar_delay)  # Be extra nice to Google Scholar
+
+            # Use Scholar result if it's better
+            if scholar_result['status'] == 'verified' or \
+                    (scholar_result['status'] == 'partial_match' and result['status'] == 'not_found'):
+                result = scholar_result
+
+        # Categorize
+        if result['status'] in ['verified', 'partial_match']:
             verified.append(result)
         else:
             unverified.append(result)
-
-        # Be nice to DBLP API
-        time.sleep(delay)
 
     return {
         'verified': verified,
@@ -404,7 +518,6 @@ def verify_all_references(references: List[Dict], delay: float = 0.5) -> Dict:
 
 def save_verification_results(results: Dict, output_file: str = "verification_results.json"):
     """Save verification results to JSON file"""
-    # Prepare for JSON serialization
     output = {
         'summary': {
             'total_references': results['total'],
@@ -417,22 +530,26 @@ def save_verification_results(results: Dict, output_file: str = "verification_re
     }
 
     for v in results['verified']:
+        match_data = v.get('dblp_match') or v.get('scholar_match')
         output['verified_references'].append({
             'title': v['reference']['title'],
             'extracted_authors': v['reference']['authors'],
-            'dblp_authors': v['dblp_match']['authors'],
+            'verified_authors': match_data['authors'] if match_data else [],
             'match_percentage': f"{v['match_percentage']:.1f}%",
-            'dblp_url': v['dblp_match'].get('url', '')
+            'source': v['source'],
+            'url': match_data.get('url', '') if match_data else ''
         })
 
     for u in results['unverified']:
+        match_data = u.get('dblp_match') or u.get('scholar_match')
         output['unverified_references'].append({
             'title': u['reference']['title'],
             'extracted_authors': u['reference']['authors'],
             'status': u['status'],
+            'source': u['source'],
             'match_percentage': f"{u['match_percentage']:.1f}%",
             'unmatched_authors': u['unmatched_authors'],
-            'dblp_authors': u['dblp_match']['authors'] if u['dblp_match'] else []
+            'found_authors': match_data['authors'] if match_data else []
         })
 
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -450,6 +567,14 @@ def print_summary(results: Dict):
     print(f"✅ Verified: {results['verified_count']} ({results['verified_count'] / results['total'] * 100:.1f}%)")
     print(f"❌ Unverified: {results['unverified_count']} ({results['unverified_count'] / results['total'] * 100:.1f}%)")
 
+    # Count by source
+    dblp_count = sum(1 for v in results['verified'] if v['source'] == 'dblp')
+    scholar_count = sum(1 for v in results['verified'] if v['source'] == 'google_scholar')
+
+    print(f"\nVerified sources:")
+    print(f"  - DBLP: {dblp_count}")
+    print(f"  - Google Scholar: {scholar_count}")
+
     # Break down unverified by reason
     status_counts = {}
     for u in results['unverified']:
@@ -466,7 +591,7 @@ def print_summary(results: Dict):
 
 # Main execution
 if __name__ == "__main__":
-    pdf_path = "2025.acl-long.422.pdf"
+    pdf_path = "2025_acl-long.422.pdf"
 
     # Step 1: Extract references from PDF
     print("STEP 1: Extracting references from PDF...")
@@ -485,9 +610,13 @@ if __name__ == "__main__":
 
     print(f"Parsed {len(all_references)} references")
 
-    # Step 3: Verify against DBLP
-    print("\nSTEP 3: Verifying against DBLP...")
-    results = verify_all_references(all_references, delay=0.5)
+    # Step 3: Verify against DBLP and Google Scholar
+    print("\nSTEP 3: Verifying against DBLP and Google Scholar...")
+    results = verify_all_references(
+        all_references,
+        dblp_delay=0.5,  # Fast for DBLP
+        scholar_delay=5.0  # Slower for Google Scholar to avoid rate limiting
+    )
 
     # Step 4: Print summary
     print_summary(results)
@@ -497,21 +626,27 @@ if __name__ == "__main__":
 
     # Step 6: Save separate lists
     with open("verified_references.txt", 'w', encoding='utf-8') as f:
-        f.write("VERIFIED REFERENCES (Found in DBLP with matching authors)\n")
+        f.write("VERIFIED REFERENCES\n")
         f.write("=" * 80 + "\n\n")
         for v in results['verified']:
+            match = v.get('dblp_match') or v.get('scholar_match')
             f.write(f"{v['reference']['original']}\n")
-            f.write(f"  DBLP: {v['dblp_match']['url']}\n\n")
+            f.write(f"  Source: {v['source'].upper()}\n")
+            f.write(f"  Match: {v['match_percentage']:.1f}%\n")
+            if match:
+                f.write(f"  URL: {match.get('url', 'N/A')}\n")
+            f.write("\n")
 
     with open("unverified_references.txt", 'w', encoding='utf-8') as f:
-        f.write("UNVERIFIED REFERENCES (Not found or author mismatch)\n")
+        f.write("UNVERIFIED REFERENCES\n")
         f.write("=" * 80 + "\n\n")
         for u in results['unverified']:
             f.write(f"{u['reference']['original']}\n")
             f.write(f"  Status: {u['status']}\n")
+            f.write(f"  Last checked: {u['source']}\n")
             f.write(f"  Match: {u['match_percentage']:.1f}%\n")
             if u['unmatched_authors']:
-                f.write(f"  Unmatched authors: {', '.join(u['unmatched_authors'])}\n")
+                f.write(f"  Unmatched: {', '.join(u['unmatched_authors'])}\n")
             f.write("\n")
 
     print("✅ Saved verified_references.txt")
